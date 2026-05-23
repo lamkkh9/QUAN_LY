@@ -3,7 +3,7 @@
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
-// Đường dẫn file lưu dữ liệu tạm thời trên server
+// Đường dẫn file lưu dữ liệu trên server
 $storage_file = __DIR__ . '/online_devices.json';
 
 // Đọc dữ liệu cũ lên (nếu chưa có file thì tạo mảng rỗng)
@@ -20,52 +20,67 @@ $request_uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 // =========================================================================
 if ($request_uri === '/online') {
     header('Content-Type: application/json');
-    header('Access-Control-Allow-Origin: *'); // Cho phép mọi App truy cập không bị lỗi CORS
+    header('Access-Control-Allow-Origin: *');
 
-    // Lấy tham số id_devici từ URL
     if (isset($_GET['id_devici']) && !empty(trim($_GET['id_devici']))) {
         $device_id = trim($_GET['id_devici']);
         
-        // Ghi nhận thời gian hiện tại của máy này (tính bằng giây)
+        // Luôn tự động thêm mới nếu chưa có, hoặc cập nhật thời gian nếu đã có
         $active_devices[$device_id] = time(); 
         
-        // Lưu lại vào file JSON trên server
-        if (file_put_contents($storage_file, json_encode($active_devices, JSON_PRETTY_PRINT))) {
-            echo json_encode([
-                "status" => "success", 
-                "message" => "Da ghi nhan may " . $device_id . " online."
-            ]);
-        } else {
-            http_response_code(500);
-            echo json_encode(["status" => "error", "message" => "Khong the ghi dữ liệu lên server"]);
-        }
+        // Lưu lại vào file JSON
+        file_put_contents($storage_file, json_encode($active_devices, JSON_PRETTY_PRINT));
+        
+        echo json_encode(["status" => "success", "message" => "Da ghi nhan may " . $device_id]);
     } else {
         http_response_code(400);
-        echo json_encode(["status" => "error", "message" => "Thieu hoac trong id_devici tren URL"]);
+        echo json_encode(["status" => "error", "message" => "Thieu id_devici"]);
     }
     exit;
 }
 
 // =========================================================================
-// CHỨC NĂNG 2: GIAO DIỆN QUẢN TRỊ TRÊN TRANG CHỦ (Khi bạn vào xem bằng trình duyệt)
+// CHỨC NĂNG 2: PHÂN LOẠI ON/OFF VÀ HIỂN THỊ GIAO DIỆN
 // =========================================================================
 $now = time();
 $online_count = 0;
-$active_list = [];
-$updated_devices = [];
+$on_list = [];
+$off_list = [];
 
-// Duyệt qua danh sách để lọc các máy đang hoạt động
+// Thiết lập thời gian chờ: Quá 11 phút (660 giây) không gửi tín hiệu -> Coi như OFF
+$max_wait_time = 660; 
+
 foreach ($active_devices as $id => $last_active) {
-    // Vì App 10 phút (600 giây) mới gửi 1 lần -> Cho phép trễ tối đa 11 phút (660 giây)
-    if ($now - $last_active < 660) { 
+    $time_passed = $now - $last_active;
+
+    if ($time_passed < $max_wait_time) { 
+        // 🟢 Máy đang ON
         $online_count++;
-        $active_list[] = htmlspecialchars($id);
-        $updated_devices[$id] = $last_active; // Giữ lại những máy còn sống
+        $time_left = $max_wait_time - $time_passed;
+        $minutes_left = floor($time_left / 60);
+        
+        $on_list[] = [
+            "id" => htmlspecialchars($id),
+            "info" => $minutes_left . " phút nữa OFF"
+        ];
+    } else {
+        // 🔴 Máy đã OFF (Giữ lại ID chứ không xóa nữa)
+        // Tính xem họ đã off cách đây bao lâu
+        $time_off = $time_passed - $max_wait_time;
+        if ($time_off < 60) {
+            $off_info = "Vừa mới OFF";
+        } elseif ($time_off < 3600) {
+            $off_info = "OFF " . floor($time_off / 60) . " phút trước";
+        } else {
+            $off_info = "OFF từ " . date("H:i - d/m", $last_active);
+        }
+
+        $off_list[] = [
+            "id" => htmlspecialchars($id),
+            "info" => $off_info
+        ];
     }
 }
-
-// Cập nhật lại file để tự động xóa những máy đã tắt quá 11 phút
-file_put_contents($storage_file, json_encode($updated_devices));
 ?>
 
 <!DOCTYPE html>
@@ -73,41 +88,76 @@ file_put_contents($storage_file, json_encode($updated_devices));
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hệ thống Quản lý Thiết bị Online</title>
-    <!-- Tự động tải lại trang sau mỗi 15 giây để cập nhật số liệu mới nhất -->
-    <meta http-equiv="refresh" content="15"> 
+    <title>Hệ thống Quản lý Thiết bị</title>
+    <meta http-equiv="refresh" content="15"> <!-- Tự động F5 sau mỗi 15 giây -->
     <style>
-        body { font-family: 'Segoe UI', Arial, sans-serif; text-align: center; padding-top: 60px; background: #f0f3f5; margin: 0; }
-        .card { background: white; padding: 40px; display: inline-block; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); max-width: 450px; width: 90%; box-sizing: border-box; }
-        h2 { color: #34495e; font-size: 22px; margin-top: 0; font-weight: 600; }
-        h1 { color: #e67e22; font-size: 72px; margin: 10px 0; font-weight: bold; }
-        .device-container { text-align: left; margin-top: 25px; }
-        .label { font-size: 14px; font-weight: bold; color: #7f8c8d; text-transform: uppercase; letter-spacing: 0.5px; }
-        .device-list { background: #f8f9fa; padding: 15px; border-radius: 8px; max-height: 180px; overflow-y: auto; border: 1px solid #e2e8f0; margin-top: 8px; }
-        .device-tag { display: inline-block; background: #e8f4fd; color: #1d9bf0; padding: 6px 12px; border-radius: 6px; margin: 4px; font-size: 14px; font-weight: 500; border: 1px solid #d2e9fc; }
-        .no-device { color: #95a5a6; font-size: 14px; font-style: italic; text-align: center; display: block; padding: 10px 0; }
-        .footer-note { color: #bdc3c7; font-size: 12px; margin-top: 25px; display: block; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; text-align: center; padding: 40px 20px; background: #f0f3f5; margin: 0; }
+        .card { background: white; padding: 35px; display: inline-block; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); max-width: 650px; width: 100%; box-sizing: border-box; }
+        h2 { color: #34495e; font-size: 20px; margin-top: 0; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+        h1 { color: #2ecc71; font-size: 64px; margin: 5px 0; font-weight: bold; }
+        
+        /* Chia cột danh sách */
+        .grid-container { display: flex; gap: 20px; margin-top: 30px; text-align: left; }
+        .column { flex: 1; background: #f8f9fa; padding: 15px; border-radius: 10px; border: 1px solid #e2e8f0; }
+        .col-title { font-size: 14px; font-weight: bold; text-transform: uppercase; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 2px solid #edf2f7; }
+        .col-title.on { color: #2ecc71; }
+        .col-title.off { color: #95a5a6; }
+        
+        .device-list { max-height: 250px; overflow-y: auto; }
+        .device-row { display: flex; justify-content: space-between; background: white; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; border: 1px solid #edf2f7; font-size: 13.5px; align-items: center; }
+        
+        .on-id { font-weight: 600; color: #1d9bf0; }
+        .on-info { color: #e74c3c; font-size: 12px; font-style: italic; }
+        
+        .off-id { font-weight: 600; color: #7f8c8d; text-decoration: line-through; }
+        .off-info { color: #bdc3c7; font-size: 12px; }
+        
+        .no-device { color: #95a5a6; font-size: 13px; font-style: italic; text-align: center; display: block; padding: 10px 0; }
+        .footer-note { color: #bdc3c7; font-size: 11px; margin-top: 30px; display: block; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h2>SỐ MÁY ĐANG CHẠY THỰC TẾ</h2>
+        <h2>Số máy đang hoạt động</h2>
         <h1><?php echo $online_count; ?></h1>
         
-        <div class="device-container">
-            <span class="label">Danh sách ID máy đang online:</span>
-            <div class="device-list">
-                <?php if (!empty($active_list)): ?>
-                    <?php foreach ($active_list as $device): ?>
-                        <span class="device-tag">● <?php echo $device; ?></span>
-                    <?php endforeach; ?>
-                <?php else: ?>
-                    <span class="no-device">Không có thiết bị nào hoạt động trong 11 phút qua</span>
-                <?php endif; ?>
+        <div class="grid-container">
+            <!-- CỘT MÁY ĐANG ONLINE -->
+            <div class="column">
+                <div class="col-title on">🟢 Đang chạy (ON)</div>
+                <div class="device-list">
+                    <?php if (!empty($on_list)): ?>
+                        <?php foreach ($on_list as $device): ?>
+                            <div class="device-row">
+                                <span class="on-id">● <?php echo $device['id']; ?></span>
+                                <span class="on-info"><?php echo $device['info']; ?></span>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <span class="no-device">Không có máy nào đang bật</span>
+                    <?php endif; ?>
+                </div>
+            </div>
+            
+            <!-- CỘT MÁY ĐÃ OFFLINE -->
+            <div class="column">
+                <div class="col-title off">🔴 Đã tắt (OFF)</div>
+                <div class="device-list">
+                    <?php if (!empty($off_list)): ?>
+                        <?php foreach ($off_list as $device): ?>
+                            <div class="device-row">
+                                <span class="off-id">● <?php echo $device['id']; ?></span>
+                                <span class="off-info"><?php echo $device['info']; ?></span>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <span class="no-device">Chưa có lịch sử máy tắt</span>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
         
-        <small class="footer-note">Giao diện tự động làm mới sau mỗi 15 giây</small>
+        <small class="footer-note">Hệ thống tự động đồng bộ sau mỗi 15 giây</small>
     </div>
 </body>
 </html>
